@@ -6,13 +6,14 @@
 #include <QSystemTrayIcon>
 
 class QWidget;
+class QWindow;
 class QMenu;
 class WindowsTrayIconPrivate;
 
 #ifdef Q_OS_WIN
 
 /**
- * @brief The ROWindowsTrayIcon class
+ * @brief The WindowsTrayIcon class
  * Replaces QSystemTrayIcon: has the same methods, signals and slots,
  * but adds extra signal:
  *
@@ -26,9 +27,13 @@ class WindowsTrayIcon: public QObject
     Q_PROPERTY(bool visible READ isVisible WRITE setVisible DESIGNABLE false)
 
 public:
-    WindowsTrayIcon(QWidget *parent = Q_NULLPTR);
-    WindowsTrayIcon(const QIcon &icon, QWidget *parent = Q_NULLPTR);
+    WindowsTrayIcon(QObject *parent = Q_NULLPTR);
+    WindowsTrayIcon(const QIcon &icon, QObject *parent = Q_NULLPTR);
     ~WindowsTrayIcon();
+
+    // without this call icon is unusable.
+    void setOwnerWidget(QWidget *widget);
+    void setOwnerWindow(QWindow *window);
 
     QIcon icon() const;
     void setIcon(const QIcon &icon);
@@ -62,6 +67,9 @@ Q_SIGNALS:
 
 protected:
     WindowsTrayIconPrivate *d;
+    void privateSlot1();
+    void privateSlot2();
+    friend class WindowsTrayIconPrivate;
 
 private:
     Q_DISABLE_COPY(WindowsTrayIcon)

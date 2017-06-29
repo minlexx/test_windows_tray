@@ -4,9 +4,12 @@
 
 #include <QCoreApplication>
 #include <QWidget>
+#include <QWindow>
 #include <QPixmap>
 #include <QAbstractNativeEventFilter>
 #include <QHash>
+#include <QTimer>
+#include <QCursor>
 #include <QtWin>
 #include <QDebug>
 
@@ -14,7 +17,9 @@
 
 #include "windowstrayicon.h"
 
-
+#undef _WIN32_WINNT
+#undef _WIN32_IE
+#undef NTDDI_VERSION
 #define _WIN32_WINNT _WIN32_WINNT_VISTA
 #define _WIN32_IE _WIN32_IE_LONGHORN
 #define NTDDI_VERSION NTDDI_VISTA
@@ -93,15 +98,27 @@ WindowsTrayMessageFilter *WindowsTrayMessageFilter::s_instance = nullptr;
 
 class WindowsTrayIconPrivate {
 public:
-    explicit WindowsTrayIconPrivate(WindowsTrayIcon *roTrayIcon, QWidget *widget) {
-        ownerIcon = roTrayIcon;
-        ownerWidget = widget;
-        ownerHwnd = (HWND)widget->winId();
+    explicit WindowsTrayIconPrivate(WindowsTrayIcon *parent) {
+        ownerIcon = parent;
+        ownerHwnd = NULL;
         visible = false;
+        hover_allowEmit = true;
         iconId = (UINT)WindowsTrayMessageFilter::nextIconId();
         WindowsTrayMessageFilter::addCallbackHandler(iconId, this);
         //
-        //qDebug() << "WindowsTrayIconPrivate: new icon with id = " << iconId;
+        hover_x = hover_y = 0;
+        hoverTimer.setSingleShot(true);
+        hoverTimer.setInterval(400);
+        QObject::connect(&hoverTimer, &QTimer::timeout, ownerIcon,
+                         &WindowsTrayIcon::privateSlot1);
+        hoverDisableEmitTimer.setSingleShot(true);
+        hoverDisableEmitTimer.setInterval(1000);
+        QObject::connect(&hoverDisableEmitTimer, &QTimer::timeout,
+                         ownerIcon, &WindowsTrayIcon::privateSlot2);
+    }
+
+    void setHwnd(HWND parentHwnd) {
+        ownerHwnd = parentHwnd;
     }
 
     void init_notifyIconData(NOTIFYICONDATAW *pData) {
@@ -109,15 +126,18 @@ public:
         pData->cbSize = sizeof(NOTIFYICONDATAW);
         pData->hWnd = ownerHwnd;
         pData->uID = iconId;
-        pData->uFlags = NIF_MESSAGE | NIF_TIP;
+        pData->uFlags = NIF_MESSAGE | NIF_TIP | NIF_STATE;
         pData->uCallbackMessage = WM_TRAYMESSAGE;
         pData->uVersion = NOTIFYICON_VERSION_4;
         if (!toolTip.isEmpty()) {
             std::wstring wstr = toolTip.toStdWString();
             wcsncpy(pData->szTip, wstr.c_str(), sizeof(pData->szTip)/sizeof(WCHAR) - 1);
+            //pData->dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+            //wcsncpy(pData->szInfo, wstr.c_str(), sizeof(pData->szInfo)/sizeof(WCHAR) - 1);
+            //wcsncpy(pData->szInfoTitle, L"tray balloon", sizeof(pData->szInfoTitle)/sizeof(WCHAR) - 1);
         }
         if (!icon.isNull()) {
-            pData->uFlags |= NIF_ICON;
+            pData->uFlags = pData->uFlags | NIF_ICON;
             // setup icon. convert QIcon to HICON (using QWinExtras)
             pData->hIcon = QtWin::toHICON(icon.pixmap(32, 32));
         }
@@ -149,6 +169,7 @@ public:
         Q_ASSERT(ret == TRUE);
     }
 
+//public Q_SLOTS:
     void setVisible(bool vis) {
         if (vis && visible) return; // already visible
         if (!vis && !visible) return; // already invisible
@@ -173,19 +194,46 @@ public:
     }
 
     void on_activate(QSystemTrayIcon::ActivationReason reason) {
+        hoverTimer.stop();
+        hover_allowEmit = false;
+        hoverDisableEmitTimer.start();
         emit ownerIcon->activated(reason);
     }
 
     void on_mouseMove(int x, int y) {
-        emit ownerIcon->mouseHovered(x, y);
+        hover_x = x;
+        hover_y = y;
+        hoverTimer.stop();
+        hoverTimer.start();
+    }
+
+    void trigger_hover() {
+        hoverTimer.stop();
+        if (hover_allowEmit) {
+            QPoint cpos = QCursor::pos();
+            int delta_x = qAbs(cpos.x() - hover_x);
+            int delta_y = qAbs(cpos.y() - hover_y);
+            // only emit hover event if cursor did not move too far
+            const int tolerance = 16; // tray icons in windows are 16x16
+            if ((delta_x <= tolerance) && (delta_y <= tolerance))
+                emit ownerIcon->mouseHovered(hover_x, hover_y);
+        }
+    }
+
+    void allow_emit_mouseHover() {
+        hover_allowEmit = true;
     }
 
 
     WindowsTrayIcon *ownerIcon;
-    QWidget *ownerWidget;
+    QTimer hoverTimer;
+    QTimer hoverDisableEmitTimer;
+    int hover_x;
+    int hover_y;
+    bool hover_allowEmit;
+
     HWND ownerHwnd;
     UINT iconId;
-
     QIcon icon;
     QString toolTip;
     bool visible;
@@ -199,7 +247,7 @@ private:
 void WindowsTrayMessageFilter::call_handler(uint iconId, MSG *msg) {
     // first, find handler for this tray icon
     if (!handlers.contains(iconId)) {
-        qDebug() << "No handler for icon id: " << iconId;
+        qWarning() << "No handler for icon id: " << iconId;
         return;
     }
     WindowsTrayIconPrivate *handler = handlers[iconId];
@@ -224,23 +272,44 @@ void WindowsTrayMessageFilter::call_handler(uint iconId, MSG *msg) {
     case WM_LBUTTONDBLCLK:
         handler->on_activate(QSystemTrayIcon::DoubleClick);
         break;
-    default:
-        break;
+    // code below was for testing and it does not work :(
+    //case NIN_POPUPOPEN:
+    //    qDebug() << "NIN_POPUPOPEN";
+    //    break;
+    //case NIN_POPUPCLOSE:
+    //    qDebug() << "NIN_POPUPOPEN";
+    //    break;
+    //case NIN_BALLOONSHOW:
+    //    qDebug() << "NIN_BALLOONSHOW";
+    //    break;
+    //case NIN_BALLOONHIDE:
+    //    qDebug() << "NIN_BALLOONHIDE";
+    //    break;
     }
 }
 
 
-WindowsTrayIcon::WindowsTrayIcon(QWidget *parent):
-    QObject(parent), d(new WindowsTrayIconPrivate(this, parent))
+WindowsTrayIcon::WindowsTrayIcon(QObject *parent):
+    QObject(parent), d(new WindowsTrayIconPrivate(this))
 {
     //
 }
 
 
-WindowsTrayIcon::WindowsTrayIcon(const QIcon &icon, QWidget *parent):
-    QObject(parent), d(new WindowsTrayIconPrivate(this, parent))
+WindowsTrayIcon::WindowsTrayIcon(const QIcon &icon, QObject *parent):
+    QObject(parent), d(new WindowsTrayIconPrivate(this))
 {
     setIcon(icon);
+}
+
+
+void WindowsTrayIcon::setOwnerWidget(QWidget *widget) {
+    d->setHwnd((HWND)widget->winId());
+}
+
+
+void WindowsTrayIcon::setOwnerWindow(QWindow *window) {
+    d->setHwnd((HWND)window->winId());
 }
 
 
@@ -277,6 +346,16 @@ void WindowsTrayIcon::setVisible(bool visible) {
 
 void WindowsTrayIcon::setToolTip(const QString &tip) {
     d->setToolTip(tip);
+}
+
+
+void WindowsTrayIcon::privateSlot1() {
+    d->trigger_hover();
+}
+
+
+void WindowsTrayIcon::privateSlot2() {
+    d->allow_emit_mouseHover();
 }
 
 

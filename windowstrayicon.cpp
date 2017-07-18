@@ -103,6 +103,7 @@ public:
         ownerHwnd = NULL;
         visible = false;
         hover_allowEmit = true;
+        windows_hIcon = NULL;
         iconId = (UINT)WindowsTrayMessageFilter::nextIconId();
         WindowsTrayMessageFilter::addCallbackHandler(iconId, this);
         //
@@ -115,6 +116,14 @@ public:
         hoverDisableEmitTimer.setInterval(1000);
         QObject::connect(&hoverDisableEmitTimer, &QTimer::timeout,
                          ownerIcon, &WindowsTrayIcon::privateSlot2);
+    }
+
+    ~WindowsTrayIconPrivate() {
+        // cleanup some resources that may be left over
+        if (windows_hIcon != NULL) {
+            DestroyIcon(windows_hIcon); // call Win32 API
+            windows_hIcon = NULL;
+        }
     }
 
     void setHwnd(HWND parentHwnd) {
@@ -139,7 +148,14 @@ public:
         if (!icon.isNull()) {
             pData->uFlags = pData->uFlags | NIF_ICON;
             // setup icon. convert QIcon to HICON (using QWinExtras)
+            // this creates NEW win32 icon handle, we must free this resource some time
             pData->hIcon = QtWin::toHICON(icon.pixmap(32, 32));
+            // cleanup possible previous win32 HICON
+            if (windows_hIcon != NULL) {
+                DestroyIcon(windows_hIcon);
+            }
+            // remember allocated icon resource
+            windows_hIcon = pData->hIcon;
         }
     }
 
@@ -235,6 +251,7 @@ public:
     HWND ownerHwnd;
     UINT iconId;
     QIcon icon;
+    HICON windows_hIcon; // win32 icon resource handle
     QString toolTip;
     bool visible;
 
